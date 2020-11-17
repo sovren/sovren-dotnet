@@ -70,9 +70,9 @@ namespace Sovren.Rest
             }
         }
 
-        private HttpWebRequest CreateWebRequest(RestRequest request)
+        private async Task<HttpWebRequest> CreateWebRequest(RestRequest request)
         {
-            string fullUrl = BaseUrl + request.Endpoint + request.GetQueryString();
+            string fullUrl = BaseUrl + request.Endpoint;
 
             if (!string.IsNullOrEmpty(BaseUrl) && 
                 !string.IsNullOrEmpty(request.Endpoint) &&
@@ -111,94 +111,38 @@ namespace Sovren.Rest
             webRequest.UserAgent = $"sovren-dotnet-{_sdkVersion}";
 
             //add the body in the requested encoding
-            string body = request.GetBody();
-            byte[] bodyBytes = request.Encoding.GetBytes(body);
-            webRequest.ContentLength = bodyBytes.Length;
-
-            if (!string.IsNullOrEmpty(body))
+            if (request.BodyStream != null)
             {
+                webRequest.ContentLength = request.BodyStream.Length;
+
                 using (Stream s = webRequest.GetRequestStream())
                 {
-                    s.Write(bodyBytes, 0, bodyBytes.Length);
-                    s.Flush();
-                    s.Close();
+                    request.BodyStream.Seek(0, SeekOrigin.Begin);//reset to beginning just in case
+                    await request.BodyStream.CopyToAsync(s);
                 }
             }
 
             return webRequest;
         }
 
-        public RestResponse Execute(RestRequest request)
-        {
-            HttpWebRequest webRequest = CreateWebRequest(request);
-            return GetResponse(webRequest);
-        }
-
-        public RestResponse<T> Execute<T>(RestRequest request)
-        {
-            HttpWebRequest webRequest = CreateWebRequest(request);
-            RestResponse response = GetResponse(webRequest);
-            return new RestResponse<T>(response);
-        }
-
-        public async Task<RestResponse> ExecuteAsync(RestRequest request)
-        {
-            HttpWebRequest webRequest = CreateWebRequest(request);
-            return await GetResponseAsync(webRequest);
-        }
-
         public async Task<RestResponse<T>> ExecuteAsync<T>(RestRequest request)
         {
-            HttpWebRequest webRequest = CreateWebRequest(request);
-            RestResponse response = await GetResponseAsync(webRequest);
-            return new RestResponse<T>(response);
+            HttpWebRequest webRequest = await CreateWebRequest(request);
+            return await GetResponseAsync<T>(webRequest);
         }
 
-        private static RestResponse GetResponse(HttpWebRequest request)
-        {
-            try
-            {
-                using (HttpWebResponse webResponse = GetWebResponse(request))
-                {
-                    return CreateNormalResponse(webResponse);
-                }
-            }
-            catch (Exception e)
-            {
-                return CreateErrorResponse(e);
-            }
-        }
-
-        private static async Task<RestResponse> GetResponseAsync(HttpWebRequest request)
+        private static async Task<RestResponse<T>> GetResponseAsync<T>(HttpWebRequest request)
         {
             try
             {
                 using (HttpWebResponse webResponse = await GetWebResponseAsync(request))
                 {
-                    return CreateNormalResponse(webResponse);
+                    return await CreateNormalResponse<T>(webResponse);
                 }
             }
             catch (Exception e)
             {
-                return CreateErrorResponse(e);
-            }
-        }
-
-        private static HttpWebResponse GetWebResponse(HttpWebRequest request)
-        {
-            try
-            {
-                return (HttpWebResponse)request.GetResponse();
-            }
-            catch (WebException e)
-            {
-                //handle stuff like 400 or 500 level errors where there could be an actual response body
-                if (e.Response is HttpWebResponse)
-                {
-                    return e.Response as HttpWebResponse;
-                }
-
-                throw;
+                return CreateErrorResponse<T>(e);
             }
         }
 
@@ -227,39 +171,24 @@ namespace Sovren.Rest
             }
         }
 
-        private static RestResponse CreateNormalResponse(HttpWebResponse webResponse)
+        private static async Task<RestResponse<T>> CreateNormalResponse<T>(HttpWebResponse webResponse)
         {
-            string content;
-            Encoding encodingToUse = Encoding.UTF8;
+            RestResponse<T> response = null;
 
-            if (!string.IsNullOrEmpty(webResponse.ContentEncoding))
+            using (Stream responseBodyStream = webResponse.GetResponseStream())
             {
-                encodingToUse = Encoding.GetEncoding(webResponse.ContentEncoding);
+                response = await RestResponse<T>.CreateResponse(
+                    responseBodyStream,
+                    webResponse.StatusCode,
+                    webResponse.StatusDescription,
+                    webResponse.Headers);
             }
-            else if (!string.IsNullOrEmpty(webResponse.Headers[HttpResponseHeader.ContentType]))
-            {
-                encodingToUse = RestContentTypes.ParseContentTypeHeader(webResponse.Headers[HttpResponseHeader.ContentType]).Encoding;
-            }
-
-
-            using (Stream s = webResponse.GetResponseStream())
-            using (StreamReader sr = new StreamReader(s, encodingToUse))
-            {
-                content = sr.ReadToEnd();
-            }
-
-            RestResponse response = new RestResponse(
-                webResponse.StatusCode,
-                webResponse.StatusDescription,
-                webResponse.Headers,
-                content
-            );
 
             webResponse.Close();
             return response;
         }
 
-        private static RestResponse CreateErrorResponse(Exception e)
+        private static RestResponse<T> CreateErrorResponse<T>(Exception e)
         {
             HttpStatusCode code = HttpStatusCode.InternalServerError;
             string description = e.Message;
@@ -270,7 +199,7 @@ namespace Sovren.Rest
                 description = exception.Message;
             }
 
-            return new RestResponse(code, description);
+            return new RestResponse<T>(code, description);
         }
     }
 }

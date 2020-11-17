@@ -7,6 +7,7 @@ using Sovren.Models.API;
 using Sovren.Rest;
 using System;
 using System.Net;
+using System.Text.Json;
 
 namespace Sovren
 {
@@ -54,5 +55,5 @@ namespace Sovren
             : this(requestBody, response, errorInfo, errorInfo.TransactionId)
         {
         }
-    }    
+    }
 }

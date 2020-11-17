@@ -5,7 +5,10 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
+using System.Text.Json;
+using System.Threading.Tasks;
 using System.Web;
 
 namespace Sovren.Rest
@@ -19,33 +22,14 @@ namespace Sovren.Rest
         PATCH
     }
 
-    internal class RestRequest
+    internal class RestRequest : IDisposable
     {
-        private enum RequestParamsType
-        {
-            QueryString,
-            Body
-        }
-
-        private RequestParamsType ParamsType
-        {
-            get
-            {
-                if (Method == RestMethod.GET || Method == RestMethod.DELETE)
-                {
-                    return RequestParamsType.QueryString;
-                }
-
-                return RequestParamsType.Body;
-            }
-        }
-
         public string Endpoint { get; private set; }
         public RestMethod Method { get; private set; }
-        private string _body;
+        private bool _disposed = false;
+        public Stream BodyStream { get; private set; }
         public Encoding Encoding { get; private set; } = Encoding.UTF8;
         public Dictionary<string, string> Headers { get; private set; } = new Dictionary<string, string>();
-        public Dictionary<string, string> Parameters { get; private set; } = new Dictionary<string, string>();
 
         public RestRequest(string url, RestMethod method = RestMethod.GET)
         {
@@ -57,112 +41,49 @@ namespace Sovren.Rest
 
         public void AddHeader(string name, string value) => Headers[name] = value;
 
-        public void AddJsonBody(string json, Encoding encoding = null)
+        public async Task WriteUtf8JsonBody(object o)
         {
-            if (ParamsType != RequestParamsType.Body)
-            {
-                throw new NotSupportedException($"{Method} cannot have a body");
-            }
-            else if (Parameters.Count > 0)
-            {
-                throw new NotSupportedException("Cannot have a json body and parameters");
-            }
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(RestRequest));
 
-            if (encoding != null)
-                Encoding = encoding;
+            //do not allow this method to be called more than once
+            if (BodyStream != null)
+                throw new InvalidOperationException($"Cannot call {nameof(WriteUtf8JsonBody)}() more than once.");
+
+            BodyStream = new MemoryStream();
+            await JsonSerializer.SerializeAsync(BodyStream, o, SovrenJsonSerialization.DefaultOptions);
 
             Headers["Content-Type"] = RestContentTypes.GetContentTypeHeader(RestContentTypes.Json, Encoding);
-            _body = json;
         }
 
-        public void AddBody(string content, string contentType, Encoding encoding = null)
+        public async Task<string> GetBody()
         {
-            if (ParamsType != RequestParamsType.Body)
-            {
-                throw new NotSupportedException($"{Method} cannot have a body");
-            }
-            else if (Parameters.Count > 0)
-            {
-                throw new NotSupportedException("Cannot have a body and parameters");
-            }
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(RestRequest));
 
-            if (encoding != null)
-                Encoding = encoding;
-
-            Headers["Content-Type"] = RestContentTypes.GetContentTypeHeader(contentType, Encoding);
-            _body = content;
-        }
-
-        public void AddParameter(string name, object value)
-        {
-            if (!string.IsNullOrEmpty(_body))
-            {
-                throw new NotSupportedException("Cannot have a body and parameters");
-            }
-
-            if (ParamsType == RequestParamsType.Body)
-            {
-                Headers["Content-Type"] = RestContentTypes.GetContentTypeHeader(RestContentTypes.FormUrlEncoded, Encoding);
-            }
-
-            Parameters[name] = value.ToString();
-        }
-
-        public string GetBody()
-        {
-            if (ParamsType == RequestParamsType.QueryString)
-            {
+            if (BodyStream == null)
                 return "";
-            }
 
-            if (!string.IsNullOrEmpty(_body))
+            BodyStream.Seek(0, SeekOrigin.Begin);//reset to beginning just in case
+            using (StreamReader reader = new StreamReader(BodyStream, Encoding))
             {
-                return _body;
+                return await reader.ReadToEndAsync();
             }
-
-            if (Parameters.Count > 0)
-            {
-                //only x-www-form-urlencoded supported for now
-                if (Headers.ContainsKey("Content-Type") && Headers["Content-Type"] != null && 
-                    Headers["Content-Type"].StartsWith(RestContentTypes.FormUrlEncoded))
-                {
-                    return FormatParamsAsQueryString();
-                }
-                else
-                {
-                    throw new NotImplementedException($"Only {RestContentTypes.FormUrlEncoded} is supported for now");
-                }
-            }
-
-            return "";
         }
 
-        public string GetQueryString()
+        public void Dispose()
         {
-            if (ParamsType == RequestParamsType.Body)
+            if (!_disposed)
             {
-                return "";
-            }
-
-            string query = FormatParamsAsQueryString();
-            return string.IsNullOrEmpty(query) ? "" : $"?{query}";
-        }
-
-        private string FormatParamsAsQueryString()
-        {
-            string query = "";
-            if (Parameters != null && Parameters.Count > 0)
-            {
-                foreach (KeyValuePair<string, string> param in Parameters)
+                if (BodyStream != null)
                 {
-                    if (!string.IsNullOrEmpty(param.Key) && !string.IsNullOrEmpty(param.Value))
-                    {
-                        query += $"{HttpUtility.UrlEncode(param.Key)}={HttpUtility.UrlEncode(param.Value)}&";
-                    }
+                    BodyStream.Flush();
+                    BodyStream.Dispose();
+                    BodyStream = null;
                 }
-            }
 
-            return query;
+                _disposed = true;
+            }
         }
     }
 }

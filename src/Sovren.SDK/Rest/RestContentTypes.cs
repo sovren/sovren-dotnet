@@ -10,8 +10,6 @@ namespace Sovren.Rest
     internal static class RestContentTypes
     {
         public const string Json = "application/json";
-        public const string Xml = "application/xml";
-        public const string FormUrlEncoded = "application/x-www-form-urlencoded";
 
         /// <summary>
         /// Parses something like `application/json; charset=utf-8` into its components
